@@ -2,6 +2,8 @@ import numpy as np
 import celerite
 from celerite import terms
 import batman
+from scipy import optimize
+
 
 def sim_lc(t, ppm, per_aper_ratio, periodic_freq, aperiodic_freq, A, planet=False, mean=1.0, planet_params=[0, 0, 0, 0, 0, 0, 0, 0, 0]):
 
@@ -45,3 +47,39 @@ def transit_model(t0, per, ppm, a, inc, ecc, w, u0, u1, t):
     p.limb_dark = "quadratic"
     planet = batman.TransitModel(p, t)
     return planet.light_curve(p)
+
+def igf(t, pixel_gain_map, n_pixels, psf_sigma, flux):
+
+    # the point spread function
+    def two_d_gaussian(x, y, mux, muy, std):
+        d = np.sqrt((x - mux)**2. + (y - muy)**2.)
+        return (1./np.sqrt(2*np.pi*std*std))*np.exp(-(d**2.)/(2*std*std))
+
+    # returns the point spread function
+    def psf(n, mux, muy, std):
+        point_spread_function = np.ones_like(pixel_gain_map)
+        for i in range(n):
+            for j in range(n):
+                point_spread_function[i][j] = two_d_gaussian(i, j, mux, muy, std)
+        return point_spread_function/np.sum(point_spread_function)
+
+    # generate a random path across the detector using a fifth degree polynomial in each dimension
+    # fit to n random points
+    degrees = 5
+    u = np.linspace(0, t[-1], degrees)
+    v_x = (n_pixels/10)*(np.random.rand(degrees)) + n_pixels/2
+    v_y = (n_pixels/10)*(np.random.rand(degrees)) + n_pixels/2
+
+    def poly(u, a, b, c, d, e):
+        coeffs = [a, b, c, d, e]
+        return np.sum([coeffs[i]*(u**i) for i in range(len(coeffs))], axis=0)
+
+    res_x = optimize.curve_fit(poly, u, v_x)
+    res_y = optimize.curve_fit(poly, u, v_y)
+    x = poly(t, *res_x[0])
+    y = poly(t, *res_y[0])
+
+    point_spread_function = [psf(n_pixels, x, y, psf_sigma)*f for (x, y, f) in zip(x, y, flux)]
+    F = [np.sum(psf*pixel_gain_map) for psf in point_spread_function]
+    images = [psf*pixel_gain_map for psf in point_spread_function]
+    return F - np.median(F), images
